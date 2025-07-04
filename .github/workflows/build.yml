@@ -1,0 +1,87 @@
+# .github/workflows/build.yml
+name: Build & Release zsign
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    name: Build ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-22.04, macos-latest, windows-latest]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies (Ubuntu)
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git g++ pkg-config libssl-dev libminizip-dev zip unzip
+
+      - name: Build on Linux
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          make -C build/linux clean
+          make -C build/linux MINIZIP_LIB="/usr/lib/x86_64-linux-gnu/libminizip.a -lz"
+          zip zsign-linux.zip bin/zsign
+
+      - name: Install dependencies (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          brew update
+          brew install pkg-config openssl minizip zip unzip
+
+      - name: Build on macOS
+        if: matrix.os == 'macos-latest'
+        run: |
+          make -C build/macos clean
+          make -C build/macos
+          zip zsign-macos.zip bin/zsign
+          
+      - name: Setup MSBuild
+        if: matrix.os == 'windows-latest'
+        uses: microsoft/setup-msbuild@v2
+        
+      - name: Build on Windows
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          msbuild build/windows/vs2022/zsign.sln /p:Configuration=Release /p:Platform=x64
+          Compress-Archive -Path build/windows/vs2022/x64/Release/zsign.exe -DestinationPath zsign-windows.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zsign-${{ matrix.os }}
+          path: ${{ matrix.os == 'ubuntu-22.04' && 'zsign-linux.zip' || matrix.os == 'macos-latest' && 'zsign-macos.zip' || 'zsign-windows.zip' }}
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Get version from tag
+        id: get_version
+        run: echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Release ${{ steps.get_version.outputs.version }}
+          tag_name: ${{ steps.get_version.outputs.version }}
+          files: artifacts/*.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
